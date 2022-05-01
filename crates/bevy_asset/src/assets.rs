@@ -149,6 +149,13 @@ impl<T: Asset> Assets<T> {
         });
         self.assets.get_mut(&id)
     }
+    
+    /// Get mutable access to the asset for the given handle without sending an [`AssetEvent`].
+    ///
+    /// This is useful for preventing infinite ping-pong loops in some cases.
+    pub fn get_mut_untracked<H: Into<HandleId>>(&mut self, handle: H) -> Option<&mut T> {
+        self.assets.get_mut(&handle.into())
+    }
 
     /// Gets a _Strong_ handle pointing to the same asset as the given one
     pub fn get_handle<H: Into<HandleId>>(&self, handle: H) -> Handle<T> {
