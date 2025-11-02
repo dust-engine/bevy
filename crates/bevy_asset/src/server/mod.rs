@@ -921,6 +921,7 @@ impl AssetServer {
         let mut infos = self.data.infos.write();
         let handle =
             infos.create_loading_handle_untyped(TypeId::of::<A>(), core::any::type_name::<A>()).typed_debug_checked();
+        drop(infos); // Drop immediately to prevent deadlock.
         self.update_async_internal(handle.id().untyped(), future);
         handle
     }
