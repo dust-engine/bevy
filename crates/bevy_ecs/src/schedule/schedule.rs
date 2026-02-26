@@ -739,7 +739,15 @@ impl ScheduleGraph {
         &self.conflicting_systems
     }
 
-    fn process_config<T: ProcessScheduleConfig + Schedulable>(
+    /// Adds a single config node to the graph.
+    ///
+    /// `collect_nodes` controls whether the `NodeId`s of the processed config node are stored in the returned [`ProcessConfigsResult`].
+    /// `process_config` is the function which processes each individual config node and returns a corresponding `NodeId`.
+    ///
+    /// The fields on the returned [`ProcessConfigsResult`] are:
+    /// - `nodes`: a vector of all node ids contained in the nested `ScheduleConfigs`
+    /// - `densely_chained`: a boolean that is true if all nested nodes are linearly chained (with successive `after` orderings) in the order they are defined
+    pub fn process_config<T: ProcessScheduleConfig + Schedulable>(
         &mut self,
         config: ScheduleConfig<T>,
         collect_nodes: bool,
@@ -786,7 +794,7 @@ impl ScheduleGraph {
     /// - `nodes`: a vector of all node ids contained in the nested `ScheduleConfigs`
     /// - `densely_chained`: a boolean that is true if all nested nodes are linearly chained (with successive `after` orderings) in the order they are defined
     #[track_caller]
-    fn process_configs<
+    pub fn process_configs<
         T: ProcessScheduleConfig + Schedulable<Metadata = GraphInfo, GroupMetadata = Chain>,
     >(
         &mut self,
@@ -1395,18 +1403,18 @@ impl ScheduleGraph {
 }
 
 /// Values returned by [`ScheduleGraph::process_configs`]
-struct ProcessConfigsResult {
+pub struct ProcessConfigsResult {
     /// All nodes contained inside this `process_configs` call's [`ScheduleConfigs`] hierarchy,
     /// if `ancestor_chained` is true
-    nodes: Vec<NodeId>,
+    pub nodes: Vec<NodeId>,
     /// True if and only if all nodes are "densely chained", meaning that all nested nodes
     /// are linearly chained (as if `after` system ordering had been applied between each node)
     /// in the order they are defined
-    densely_chained: bool,
+    pub densely_chained: bool,
 }
 
 /// Trait used by [`ScheduleGraph::process_configs`] to process a single [`ScheduleConfig`].
-trait ProcessScheduleConfig: Schedulable + Sized {
+pub trait ProcessScheduleConfig: Schedulable + Sized {
     /// Process a single [`ScheduleConfig`].
     fn process_config(schedule_graph: &mut ScheduleGraph, config: ScheduleConfig<Self>) -> NodeId;
 }
