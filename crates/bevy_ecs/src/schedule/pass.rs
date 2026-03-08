@@ -22,10 +22,10 @@ pub trait ScheduleBuildPass: Send + Sync + Debug + 'static {
     fn map_set_to_systems(
         &mut self,
         _set: SystemSetKey,
+        systems: &mut Vec<SystemKey>,
         _world: &mut World,
         _graph: &mut ScheduleGraph,
-    ) -> impl Iterator<Item = SystemKey> {
-        core::iter::empty()
+    ) {
     }
 
     /// Called while flattening the dependency graph. For each `set`, this method is called
@@ -98,7 +98,7 @@ impl<T: ScheduleBuildPass> ScheduleBuildPassObj for T {
         world: &mut World,
         graph: &mut ScheduleGraph,
     ) {
-        systems.extend(self.map_set_to_systems(set, world, graph));
+        self.map_set_to_systems(set, systems, world, graph);
     }
     fn collapse_set(
         &mut self,
