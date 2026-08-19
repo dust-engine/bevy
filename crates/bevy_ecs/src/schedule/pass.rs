@@ -26,23 +26,44 @@ pub trait ScheduleBuildPass: Send + Sync + Debug + 'static {
     /// Called when a dependency between sets or systems was explicitly added to the graph.
     fn add_dependency(&mut self, from: NodeId, to: NodeId, options: Option<&Self::EdgeOptions>);
 
+    /// Called when mapping system sets to systems, once per set, with the systems
+    /// gathered from that set's children. Implementations may add additional systems
+    /// to be associated with the set.
+    ///
+    /// Sets are visited in reverse topological order (bottom-up), so any systems added
+    /// here are inherited by the set's ancestors.
+    fn map_set_to_systems(
+        &mut self,
+        _set: SystemSetKey,
+        _systems: &mut IndexSet<SystemKey, FixedHasher>,
+        _world: &mut World,
+        _graph: &mut ScheduleGraph,
+    ) {
+    }
+
     /// Called while flattening the dependency graph. For each `set`, this method is called
     /// with the `systems` associated with the set as well as an immutable reference to the current graph.
     /// Instead of modifying the graph directly, this method should return an iterator of edges to add to the graph.
     fn collapse_set(
         &mut self,
-        set: SystemSetKey,
-        systems: &IndexSet<SystemKey, FixedHasher>,
-        dependency_flattening: &DiGraph<NodeId>,
-    ) -> impl Iterator<Item = (NodeId, NodeId)>;
+        _set: SystemSetKey,
+        _systems: &IndexSet<SystemKey, FixedHasher>,
+        _world: &mut World,
+        _graph: &mut ScheduleGraph,
+        _dependency_flattening: &DiGraph<NodeId>,
+    ) -> impl Iterator<Item = (NodeId, NodeId)> {
+        core::iter::empty()
+    }
 
     /// The implementation will be able to modify the `ScheduleGraph` here.
     fn build(
         &mut self,
-        world: &mut World,
-        graph: &mut ScheduleGraph,
-        dependency_flattened: FlattenedDependencies<'_>,
-    ) -> Result<(), ScheduleBuildError>;
+        _world: &mut World,
+        _graph: &mut ScheduleGraph,
+        _dependency_flattened: FlattenedDependencies<'_>,
+    ) -> Result<(), ScheduleBuildError> {
+        Ok(())
+    }
 }
 
 /// A wrapper around the directed, acyclic graph of system edges.
@@ -112,7 +133,7 @@ impl FlattenedDependencies<'_> {
 }
 
 /// Object safe version of [`ScheduleBuildPass`].
-pub(super) trait ScheduleBuildPassObj: Send + Sync + Debug {
+pub(super) trait ScheduleBuildPassObj: Any + Send + Sync + Debug {
     fn build(
         &mut self,
         world: &mut World,
@@ -120,10 +141,20 @@ pub(super) trait ScheduleBuildPassObj: Send + Sync + Debug {
         dependency_flattened: FlattenedDependencies<'_>,
     ) -> Result<(), ScheduleBuildError>;
 
+    fn map_set_to_systems(
+        &mut self,
+        set: SystemSetKey,
+        systems: &mut IndexSet<SystemKey, FixedHasher>,
+        world: &mut World,
+        graph: &mut ScheduleGraph,
+    );
+
     fn collapse_set(
         &mut self,
         set: SystemSetKey,
         systems: &IndexSet<SystemKey, FixedHasher>,
+        world: &mut World,
+        graph: &mut ScheduleGraph,
         dependency_flattening: &DiGraph<NodeId>,
         dependencies_to_add: &mut Vec<(NodeId, NodeId)>,
     );
@@ -139,14 +170,25 @@ impl<T: ScheduleBuildPass> ScheduleBuildPassObj for T {
     ) -> Result<(), ScheduleBuildError> {
         self.build(world, graph, dependency_flattened)
     }
+    fn map_set_to_systems(
+        &mut self,
+        set: SystemSetKey,
+        systems: &mut IndexSet<SystemKey, FixedHasher>,
+        world: &mut World,
+        graph: &mut ScheduleGraph,
+    ) {
+        self.map_set_to_systems(set, systems, world, graph);
+    }
     fn collapse_set(
         &mut self,
         set: SystemSetKey,
         systems: &IndexSet<SystemKey, FixedHasher>,
+        world: &mut World,
+        graph: &mut ScheduleGraph,
         dependency_flattening: &DiGraph<NodeId>,
         dependencies_to_add: &mut Vec<(NodeId, NodeId)>,
     ) {
-        let iter = self.collapse_set(set, systems, dependency_flattening);
+        let iter = self.collapse_set(set, systems, world, graph, dependency_flattening);
         dependencies_to_add.extend(iter);
     }
     fn add_dependency(&mut self, from: NodeId, to: NodeId, all_options: &TypeIdMap<Box<dyn Any>>) {

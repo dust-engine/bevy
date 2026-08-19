@@ -528,6 +528,24 @@ impl<K: Eq + Hash, V: Clone + Eq + Hash, S: BuildHasher + Default> DagGroups<K, 
     where
         N: GraphNodeId + TryInto<K, Error = V>,
     {
+        Self::with_capacity_and_hook(capacity, graph, toposort, |_, _| {})
+    }
+
+    /// Same as [`Self::with_capacity`], but calls `map_group` with each group
+    /// immediately after it is collected and before it is inserted, allowing
+    /// the group's contents to be modified.
+    ///
+    /// Because groups are built in reverse topological order (bottom-up), any
+    /// values added to a group here are inherited by that key's ancestors.
+    pub fn with_capacity_and_hook<N>(
+        capacity: usize,
+        graph: &DiGraph<N, S>,
+        toposort: &[N],
+        mut map_group: impl FnMut(&K, &mut IndexSet<V, S>),
+    ) -> Self
+    where
+        N: GraphNodeId + TryInto<K, Error = V>,
+    {
         let mut groups: HashMap<K, IndexSet<V, S>, S> =
             HashMap::with_capacity_and_hasher(capacity, Default::default());
 
@@ -552,6 +570,10 @@ impl<K: Eq + Hash, V: Clone + Eq + Hash, S: BuildHasher + Default> DagGroups<K, 
                     }
                 }
             }
+
+            // Let the caller add to (or otherwise adjust) this group before
+            // ancestor keys inherit from it.
+            map_group(&key, &mut children);
 
             groups.insert(key, children);
         }

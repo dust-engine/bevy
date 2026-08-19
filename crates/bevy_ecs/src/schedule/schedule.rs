@@ -507,6 +507,14 @@ impl Schedule {
         self
     }
 
+    /// Obtain a mutable reference to a schedule build pass with type `T`.
+    pub fn get_build_pass_mut<T: ScheduleBuildPass>(&mut self) -> Option<&mut T> {
+        self.graph
+            .passes
+            .get_mut(&TypeId::of::<T>())
+            .map(|x| (x.as_mut() as &mut dyn Any).downcast_mut().unwrap())
+    }
+
     /// Remove a custom build pass.
     pub fn remove_build_pass<T: ScheduleBuildPass>(&mut self) {
         self.graph.passes.shift_remove(&TypeId::of::<T>());
@@ -787,7 +795,15 @@ impl ScheduleGraph {
         &self.conflicting_systems
     }
 
-    fn process_config<T: ProcessScheduleConfig + Schedulable>(
+    /// Adds a single config node to the graph.
+    ///
+    /// `collect_nodes` controls whether the [`NodeId`] of the processed config node is stored in
+    /// the returned [`ProcessConfigsResult`].
+    ///
+    /// The fields on the returned [`ProcessConfigsResult`] are:
+    /// - `nodes`: a vector of all node ids contained in the nested `ScheduleConfigs`
+    /// - `densely_chained`: a boolean that is true if all nested nodes are linearly chained (with successive `after` orderings) in the order they are defined
+    pub fn process_config<T: ProcessScheduleConfig + Schedulable>(
         &mut self,
         config: ScheduleConfig<T>,
         collect_nodes: bool,
@@ -834,7 +850,7 @@ impl ScheduleGraph {
     /// - `nodes`: a vector of all node ids contained in the nested `ScheduleConfigs`
     /// - `densely_chained`: a boolean that is true if all nested nodes are linearly chained (with successive `after` orderings) in the order they are defined
     #[track_caller]
-    fn process_configs<
+    pub fn process_configs<
         T: ProcessScheduleConfig + Schedulable<Metadata = GraphInfo, GroupMetadata = Chain>,
     >(
         &mut self,
@@ -1188,11 +1204,32 @@ impl ScheduleGraph {
         // System sets that share systems and have an ordering dependency cannot be ordered.
         dependency_analysis.check_for_cross_dependencies(&hierarchy_analysis)?;
 
-        // Group all systems by the system sets they belong to.
-        self.set_systems = self
-            .hierarchy
-            .group_by_key(self.system_sets.len())
+        // Group all systems by the system sets they belong to, giving build
+        // passes a chance to add systems to each set as it is built.
+        self.hierarchy
+            .ensure_toposorted()
             .map_err(ScheduleBuildError::HierarchySort)?;
+        // Temporarily move the hierarchy and passes out of `self` so that passes
+        // can be handed a `&mut ScheduleGraph`.
+        let hierarchy = core::mem::take(&mut self.hierarchy);
+        let mut passes = core::mem::take(&mut self.passes);
+        let num_sets = self.system_sets.len();
+        let toposort = hierarchy
+            .get_toposort()
+            .expect("hierarchy was toposorted above");
+        let set_systems = DagGroups::with_capacity_and_hook(
+            num_sets,
+            hierarchy.graph(),
+            toposort,
+            |&set, systems| {
+                for pass in passes.values_mut() {
+                    pass.map_set_to_systems(set, systems, world, self);
+                }
+            },
+        );
+        self.hierarchy = hierarchy;
+        self.passes = passes;
+        self.set_systems = set_systems;
         // Check for system sets that share systems but have an ordering dependency.
         dependency_analysis.check_for_overlapping_groups(&self.set_systems)?;
 
@@ -1206,16 +1243,20 @@ impl ScheduleGraph {
         // Flatten system ordering dependencies by collapsing system sets. This
         // means that if a system set has ordering dependencies, those
         // dependencies are applied to all systems in the set.
+        // `set_systems` and `passes` are moved out of `self` so that passes can
+        // be handed a `&mut ScheduleGraph`. They are restored below.
+        let set_systems = core::mem::take(&mut self.set_systems);
+        let mut passes = core::mem::take(&mut self.passes);
+        let dependency = self.dependency.clone();
         let mut flat_dependency =
-            self.set_systems
-                .flatten(self.dependency.clone(), |set, systems, flattening, temp| {
-                    for pass in self.passes.values_mut() {
-                        pass.collapse_set(set, systems, flattening, temp);
-                    }
-                });
+            set_systems.flatten(dependency, |set, systems, flattening, temp| {
+                for pass in passes.values_mut() {
+                    pass.collapse_set(set, systems, world, self, flattening, temp);
+                }
+            });
+        self.set_systems = set_systems;
 
         // Allow modification of the schedule graph by build passes.
-        let mut passes = core::mem::take(&mut self.passes);
         let mut added_edges = Default::default();
         for pass in passes.values_mut() {
             pass.build(
@@ -1432,18 +1473,18 @@ impl ScheduleGraph {
 }
 
 /// Values returned by [`ScheduleGraph::process_configs`]
-struct ProcessConfigsResult {
+pub struct ProcessConfigsResult {
     /// All nodes contained inside this `process_configs` call's [`ScheduleConfigs`] hierarchy,
     /// if `ancestor_chained` is true
-    nodes: Vec<NodeId>,
+    pub nodes: Vec<NodeId>,
     /// True if and only if all nodes are "densely chained", meaning that all nested nodes
     /// are linearly chained (as if `after` system ordering had been applied between each node)
     /// in the order they are defined
-    densely_chained: bool,
+    pub densely_chained: bool,
 }
 
 /// Trait used by [`ScheduleGraph::process_configs`] to process a single [`ScheduleConfig`].
-trait ProcessScheduleConfig: Schedulable + Sized {
+pub trait ProcessScheduleConfig: Schedulable + Sized {
     /// Process a single [`ScheduleConfig`].
     fn process_config(schedule_graph: &mut ScheduleGraph, config: ScheduleConfig<Self>) -> NodeId;
 }
@@ -2668,26 +2709,6 @@ mod tests {
                 _to: crate::schedule::NodeId,
                 _options: Option<&Self::EdgeOptions>,
             ) {
-            }
-            fn build(
-                &mut self,
-                _world: &mut World,
-                _graph: &mut super::ScheduleGraph,
-                _dependency_flattened: FlattenedDependencies<'_>,
-            ) -> core::result::Result<(), crate::schedule::ScheduleBuildError> {
-                Ok(())
-            }
-            fn collapse_set(
-                &mut self,
-                _set: crate::schedule::SystemSetKey,
-                _systems: &indexmap::IndexSet<
-                    crate::schedule::SystemKey,
-                    bevy_platform::hash::FixedHasher,
-                >,
-                _dependency_flattening: &crate::schedule::graph::DiGraph<crate::schedule::NodeId>,
-            ) -> impl Iterator<Item = (crate::schedule::NodeId, crate::schedule::NodeId)>
-            {
-                core::iter::empty()
             }
         }
 
