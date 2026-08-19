@@ -565,11 +565,14 @@ impl<'a> LoadContext<'a> {
         &self.asset_path
     }
 
-    /// Reads the asset at the given path and returns its bytes
-    pub async fn read_asset_bytes<'b, 'c>(
+    pub async fn read_asset<'b, 'c, 'd>(
         &'b mut self,
         path: impl Into<AssetPath<'c>>,
-    ) -> Result<Vec<u8>, ReadAssetBytesError> {
+    ) -> Result<Box<dyn Reader + 'd>, ReadAssetBytesError>
+    where
+        'c: 'd,
+        'a: 'd,
+    {
         let path = path.into();
         if path.path() == Path::new("") {
             error!("Attempted to load an asset with an empty path \"{path}\"!");
@@ -581,11 +584,11 @@ impl<'a> LoadContext<'a> {
             AssetServerMode::Unprocessed => source.reader(),
             AssetServerMode::Processed => source.processed_reader()?,
         };
-        let mut reader = asset_reader.read(path.path()).await?;
+
         let hash = if self.populate_hashes {
             // NOTE: ensure meta is read while the asset bytes reader is still active to ensure transactionality
             // See `ProcessorGatedReader` for more info
-            let meta_bytes = asset_reader.read_meta_bytes(path.path()).await?;
+            let meta_bytes = asset_reader.read_meta_bytes(path.path_cow()).await?;
             let minimal: ProcessedInfoMinimal = ron::de::from_bytes(&meta_bytes)
                 .map_err(DeserializeMetaError::DeserializeMinimal)?;
             let processed_info = minimal
@@ -595,6 +598,19 @@ impl<'a> LoadContext<'a> {
         } else {
             Default::default()
         };
+        let reader = asset_reader.read(path.path_cow()).await?;
+
+        self.loader_dependencies.insert(path.clone_owned(), hash);
+        Ok(reader)
+    }
+
+    /// Reads the asset at the given path and returns its bytes
+    pub async fn read_asset_bytes<'b, 'c>(
+        &'b mut self,
+        path: impl Into<AssetPath<'c>>,
+    ) -> Result<Vec<u8>, ReadAssetBytesError> {
+        let path = path.into();
+        let mut reader = self.read_asset(path.clone()).await?;
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
@@ -603,7 +619,6 @@ impl<'a> LoadContext<'a> {
                 path: path.path().to_path_buf(),
                 source,
             })?;
-        self.loader_dependencies.insert(path.clone_owned(), hash);
         Ok(bytes)
     }
 
