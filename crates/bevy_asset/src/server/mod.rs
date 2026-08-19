@@ -1055,16 +1055,58 @@ impl AssetServer {
         &self,
         future: impl Future<Output = Result<A, E>> + Send + 'static,
     ) -> Handle<A> {
-        let mut infos = self.write_infos();
-        let handle = infos.create_loading_handle_untyped(TypeId::of::<A>(), type_name::<A>());
-
-        // drop the lock on `AssetInfos` before spawning a task that may block on it in single-threaded
-        #[cfg(any(target_arch = "wasm32", not(feature = "multi_threaded")))]
-        drop(infos);
+        let handle = {
+            let mut infos = self.write_infos();
+            infos.create_loading_handle_untyped(TypeId::of::<A>(), type_name::<A>())
+            // Drop the lock on `AssetInfos` immediately: `update_async_internal`
+            // reacquires it, and the spawned task may block on it in
+            // single-threaded configurations.
+        };
 
         // `create_loading_handle_untyped` always returns a Strong variant, so this is safe.
         let index = (&handle).try_into().unwrap();
+        self.update_async_internal::<A, E>(index, future);
+        handle.typed_debug_checked()
+    }
 
+    /// Drives `future` into an already existing [`Handle`], rather than creating a new one as
+    /// [`add_async`](Self::add_async) does.
+    ///
+    /// If the handle is not yet tracked by this [`AssetServer`], it starts being tracked and is
+    /// marked as loading. If it is already tracked, its current load state is left alone. Once the
+    /// future resolves, the resulting asset replaces whatever the handle previously pointed at.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `handle` is not a [`Handle::Strong`].
+    pub fn update_async<A: Asset, E: core::error::Error + Send + Sync + 'static>(
+        &self,
+        handle: &Handle<A>,
+        future: impl Future<Output = Result<A, E>> + Send + 'static,
+    ) {
+        let Handle::Strong(strong_handle) = handle else {
+            panic!("Handle must be strong!")
+        };
+        let index = ErasedAssetIndex::new(strong_handle.index, strong_handle.type_id);
+        {
+            let mut infos = self.write_infos();
+            infos.infos.entry(index).or_insert_with(|| {
+                let mut info = AssetInfo::new(Arc::downgrade(strong_handle), None);
+                info.load_state = LoadState::Loading;
+                info.dep_load_state = DependencyLoadState::Loading;
+                info.rec_dep_load_state = RecursiveDependencyLoadState::Loading;
+                info
+            });
+            // Drop the lock before spawning the task, to prevent a deadlock.
+        }
+        self.update_async_internal::<A, E>(index, future);
+    }
+
+    fn update_async_internal<A: Asset, E: core::error::Error + Send + Sync + 'static>(
+        &self,
+        index: ErasedAssetIndex,
+        future: impl Future<Output = Result<A, E>> + Send + 'static,
+    ) {
         let event_sender = self.data.asset_event_sender.clone();
 
         let task = IoTaskPool::get().spawn(async move {
@@ -1095,12 +1137,10 @@ impl AssetServer {
         });
 
         #[cfg(not(any(target_arch = "wasm32", not(feature = "multi_threaded"))))]
-        infos.pending_tasks.insert(index, task);
+        self.write_infos().pending_tasks.insert(index, task);
 
         #[cfg(any(target_arch = "wasm32", not(feature = "multi_threaded")))]
         task.detach();
-
-        handle.typed_debug_checked()
     }
 
     /// Loads all assets from the specified folder recursively. The [`LoadedFolder`] asset (when it loads) will
