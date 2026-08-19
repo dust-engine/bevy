@@ -443,6 +443,15 @@ where
     }
 
     #[inline]
+    fn configurate(&mut self, config: &mut dyn core::any::Any) {
+        match &mut self.inner {
+            BuilderSystemInner::Initialized { system, .. } => system.configurate(config),
+            BuilderSystemInner::Uninitialized { .. } => {}
+            BuilderSystemInner::Invalid => unreachable!(),
+        }
+    }
+
+    #[inline]
     fn check_change_tick(&mut self, check: CheckChangeTicks) {
         match &mut self.inner {
             BuilderSystemInner::Initialized { system, .. } => system.check_change_tick(check),

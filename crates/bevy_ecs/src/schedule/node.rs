@@ -126,6 +126,11 @@ impl System for SystemWithAccess {
     fn set_last_run(&mut self, last_run: Tick) {
         self.system.set_last_run(last_run);
     }
+
+    #[inline]
+    fn configurate(&mut self, config: &mut dyn core::any::Any) {
+        self.system.configurate(config);
+    }
 }
 
 /// A [`BoxedCondition`] stored alongside the access returned from [`System::initialize`].
@@ -216,6 +221,11 @@ impl System for ConditionWithAccess {
     #[inline]
     fn set_last_run(&mut self, last_run: Tick) {
         self.condition.set_last_run(last_run);
+    }
+
+    #[inline]
+    fn configurate(&mut self, config: &mut dyn core::any::Any) {
+        self.condition.configurate(config);
     }
 }
 
@@ -967,5 +977,81 @@ mod tests {
         let mut world = World::new();
         sets.initialize(&mut world);
         assert!(sets.is_initialized());
+    }
+}
+
+#[cfg(test)]
+mod configurate_tests {
+    use super::SystemWithAccess;
+    use crate::{
+        change_detection::Tick,
+        query::FilteredAccessSet,
+        system::{
+            IntoSystem, System, SystemMeta, SystemParam, SystemParamValidationError,
+        },
+        world::{unsafe_world_cell::UnsafeWorldCell, World},
+    };
+    use alloc::boxed::Box;
+    use core::any::Any;
+
+    /// A param whose state is only ever set through [`SystemParam::configurate`].
+    struct Configured(u32);
+
+    // SAFETY: this param accesses nothing in the world.
+    unsafe impl SystemParam for Configured {
+        type State = u32;
+        type Item<'w, 's> = Configured;
+
+        fn init_state(_world: &mut World) -> Self::State {
+            0
+        }
+
+        fn init_access(
+            _state: &Self::State,
+            _system_meta: &mut SystemMeta,
+            _component_access_set: &mut FilteredAccessSet,
+            _world: &mut World,
+        ) {
+        }
+
+        fn configurate(state: &mut Self::State, _meta: &mut SystemMeta, config: &mut dyn Any) {
+            if let Some(value) = config.downcast_ref::<u32>() {
+                *state = *value;
+            }
+        }
+
+        unsafe fn get_param<'w, 's>(
+            state: &'s mut Self::State,
+            _system_meta: &SystemMeta,
+            _world: UnsafeWorldCell<'w>,
+            _change_tick: Tick,
+        ) -> Result<Self::Item<'w, 's>, SystemParamValidationError> {
+            Ok(Configured(*state))
+        }
+    }
+
+    /// `SystemWithAccess` is what a `ScheduleBuildPass` gets from
+    /// `ScheduleGraph::systems`, so it has to forward `configurate` down to the
+    /// system's params. When it does not, the call silently no-ops via the
+    /// default trait method and every param keeps its unconfigured state.
+    #[test]
+    fn system_with_access_forwards_configurate_to_params() {
+        #[derive(crate::resource::Resource, Default)]
+        struct Observed(u32);
+
+        fn observing_system(param: Configured, mut observed: crate::system::ResMut<Observed>) {
+            observed.0 = param.0;
+        }
+
+        let mut world = World::new();
+        world.init_resource::<Observed>();
+
+        let mut system = SystemWithAccess::new(Box::new(IntoSystem::into_system(observing_system)));
+        system.initialize(&mut world);
+
+        system.configurate(&mut 42u32);
+        system.run((), &mut world).unwrap();
+
+        assert_eq!(world.resource::<Observed>().0, 42);
     }
 }
