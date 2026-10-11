@@ -86,7 +86,7 @@ impl core::fmt::Debug for AssetInfo {
 }
 
 impl AssetInfo {
-    fn new(
+    pub(crate) fn new(
         weak_handle: Weak<StrongHandle>,
         path: Option<AssetPath<'static>>,
         meta_transform: Option<MetaTransform>,
@@ -121,7 +121,7 @@ pub(crate) struct AssetServerStats {
 #[derive(Default)]
 pub(crate) struct AssetInfos {
     path_to_index: HashMap<AssetPath<'static>, TypeIdHashMap<AssetIndex>>,
-    infos: HashMap<ErasedAssetIndex, AssetInfo>,
+    pub(crate) infos: HashMap<ErasedAssetIndex, AssetInfo>,
     /// If set to `true`, this informs [`AssetInfos`] to track data relevant to watching for changes (such as `load_dependents`)
     /// This should only be set at startup.
     pub(crate) watching_for_changes: bool,
