@@ -751,6 +751,8 @@ mod tests {
         vec::Vec,
     };
     use async_channel::{Receiver, Sender};
+    use async_lock::Mutex;
+    use atomicow::CowArc;
     use bevy_app::{App, TaskPoolPlugin, Update};
     use bevy_diagnostic::{DiagnosticsPlugin, DiagnosticsStore};
     use bevy_ecs::{
@@ -758,10 +760,7 @@ mod tests {
         prelude::*,
         schedule::{LogLevel, ScheduleBuildSettings},
     };
-    use bevy_platform::{
-        collections::{HashMap, HashSet},
-        sync::Mutex,
-    };
+    use bevy_platform::collections::{HashMap, HashSet};
     use bevy_reflect::{Reflect, TypePath};
     use bevy_tasks::{block_on, futures::check_ready, AsyncComputeTaskPool};
     use core::{any::TypeId, assert_matches, time::Duration};
@@ -896,7 +895,7 @@ mod tests {
     /// A dummy [`CoolText`] asset reader that only succeeds after `failure_count` times it's read from for each asset.
     #[derive(Default, Clone)]
     pub struct UnstableMemoryAssetReader {
-        pub attempt_counters: Arc<Mutex<HashMap<Box<Path>, usize>>>,
+        pub attempt_counters: Arc<Mutex<HashMap<CowArc<'static, Path>, usize>>>,
         pub load_delay: Duration,
         memory_reader: MemoryAssetReader,
         failure_count: usize,
@@ -925,18 +924,21 @@ mod tests {
         }
         async fn read_meta<'a>(
             &'a self,
-            path: &'a Path,
+            path: CowArc<'a, Path>,
         ) -> Result<impl Reader + 'a, AssetReaderError> {
             self.memory_reader.read_meta(path).await
         }
-        async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
+        async fn read<'a>(
+            &'a self,
+            path: CowArc<'a, Path>,
+        ) -> Result<impl Reader + 'a, AssetReaderError> {
             let attempt_number = {
-                let mut attempt_counters = self.attempt_counters.lock().unwrap();
-                if let Some(existing) = attempt_counters.get_mut(path) {
+                let mut attempt_counters = self.attempt_counters.lock().await;
+                if let Some(existing) = attempt_counters.get_mut(&path.clone_owned()) {
                     *existing += 1;
                     *existing
                 } else {
-                    attempt_counters.insert(path.into(), 1);
+                    attempt_counters.insert(path.clone_owned(), 1);
                     1
                 }
             };
